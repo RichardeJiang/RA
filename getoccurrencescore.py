@@ -110,6 +110,39 @@ def tagNPFilter(sentence):
 		result += " "
 	return result
 
+def generateNPTextList(text):
+
+	stop_words = set(nltk.corpus.stopwords.words('english'))
+
+	result = []
+	tokens = nltk.word_tokenize(text)
+	tagged = nltk.pos_tag(tokens)
+	# NPGrammar = "NP:{<DT>?<JJ|NN|NNS>*<NN|NNS>}"
+	NPGrammar = "NP:{<JJ|NN|NNS>*<NN|NNS>}"
+	cp = nltk.RegexpParser(NPGrammar)
+	resultTree = cp.parse(tagged)
+	stemmer = SnowballStemmer("english")
+	for node in resultTree:
+		if (type(node) == nltk.tree.Tree):
+			# if node[0][1] == 'DT':
+			# 	node.remove(node[0])
+			if node.leaves()[-1][0].lower() not in stop_words or len(node.leaves()) >= 2:
+				currNNs = [stemmer.stem(item[0]) for item in node.leaves()]
+				currNPs = []
+				for index, NN in enumerate(currNNs):
+					currNPs.append(''.join(item for item in currNNs[index:]))
+					for replicateTimes in range(len(currNNs) - index - 1):
+						currNPs.append(''.join(item for item in currNNs[index:]))
+
+				result.append(currNPs)
+		
+		#Remove the following else clause to ignore all single terms
+		# else:
+		# 	if node[0].lower() not in stop_words:
+		# 		result.append([stemmer.stem(node[0])])
+
+	return result
+
 def getRippleScores(wordRanks, numOfWordsWanted, graph):
 	'''the ripple smooths in 3 folds: 0.2, 0.6, 0.8'''
 	# word_ranks = {word_rank[0]: word_rank[1]
@@ -117,7 +150,7 @@ def getRippleScores(wordRanks, numOfWordsWanted, graph):
 	# keywords = set(word_ranks.keys())
 	result = {}
 	keywordList = []
-	ripple = [0.6, 0.8]
+	ripple = [0.36, 0.6]
 	for index in range(numOfWordsWanted):
 		if len(wordRanks) > 0:
 			currKeyword = sorted(wordRanks.iteritems(), key=lambda x: x[1], reverse=True)[0][0]
@@ -132,16 +165,6 @@ def getRippleScores(wordRanks, numOfWordsWanted, graph):
 			for iterIndex in range(2):
 				currRipple = ripple[iterIndex]
 				temp = []
-				# currOpenLen = len(openSet)
-				# for openSetIndex in range(currOpenLen):
-				# 	affectedEdges = graph.edges(openSet[openSetIndex])
-				# 	for affectedEdge in affectedEdges:
-				# 		node = affectedEdge[1]
-				# 		if node not in closeSet:
-				# 			# wordRanks[node]
-				# 			oldValue = wordRanks[node]
-				# 			wordRanks[node] = (oldValue * currRipple)
-				# 			openSet.append(node)
 				for ele in openSet:
 					affectedEdges = graph.edges(ele)
 					for affectedEdge in affectedEdges:
@@ -156,6 +179,20 @@ def getRippleScores(wordRanks, numOfWordsWanted, graph):
 
 	return result
 
+def keyWordFilter(article, keywords, filterTags):
+	# the idea is to use citation, reference, keyword list to find software engineering related articles
+	for filterTag in filterTags:
+		tagContents = article.getElementsByTagName(filterTag)
+
+		for tagContent in tagContents:
+			for keyword in keywords:
+				keywordDash = '-'.join(keyword.split(' '))
+				if ((keyword in tagContent.childNodes[0].data.lower()) 
+					or (keywordDash in tagContent.childNodes[0].data.lower())):
+					return True
+	
+	return False
+
 def extract_candidate_words(text, good_tags=set(['JJ','JJR','JJS','NN','NNP','NNS','NNPS'])):
 	stop_words = set(nltk.corpus.stopwords.words('english'))
 	tagged_words = nltk.pos_tag(nltk.word_tokenize(text))
@@ -163,7 +200,69 @@ def extract_candidate_words(text, good_tags=set(['JJ','JJR','JJS','NN','NNP','NN
 		if tag in good_tags and word.lower() not in stop_words and len(word) > 1]
 	return candidates
 
-def getKeyphraseByTextRank(text, n_keywords=0.05, n_windowSize=4, n_cooccurSize=3):
+def getKeyphraseByTextRankFromNP(textList, n_keywords=0.7, n_windowSize=3):
+	graph = networkx.Graph()
+	graph.add_nodes_from(set([NN for NNList in textList for NN in NNList]))
+	listLength = len(textList)
+	for i in range(0, n_windowSize - 1):
+		for textIndex, texts in enumerate(textList):
+			if textIndex + i + 1 < listLength:
+				neighboringTexts = textList[textIndex + i + 1]
+				# If one of the words is a single term, link only it with its neighbor's full NP
+				if len(texts) == 1 or len(neighboringTexts) == 1:
+					# graph.add_edge(texts[0], neighboringTexts[0], weight = 1)
+					pass
+				else:
+					temptexts = list(texts)
+					tempneighboringtexts = list(neighboringTexts)
+					temptexts.pop()
+					tempneighboringtexts.pop()
+					# graph.add_edges_from([(texta, textb) for texta in temptexts for textb in tempneighboringtexts])
+					edges = [(texta, textb) for texta in temptexts for textb in tempneighboringtexts]
+					for edge in edges:
+						if graph.has_edge(edge[0], edge[1]):
+							graph[edge[0]][edge[1]]['weight'] += 1
+						else:
+							graph.add_edge(edge[0], edge[1], weight = 1)
+						# if edge in graph.edges() or edge[::-1] in graph.edges():
+
+					# graph.add_edges_from([(texta, textb) for texta in texts for textb in neighboringTexts])
+					print 'original texts: ', temptexts
+					print 'neighboring texts: ', tempneighboringtexts
+
+	ranks = networkx.pagerank(graph)
+	if 0 < n_keywords < 1:
+		n_keywords = int(round(listLength * n_keywords))
+
+
+	# MMRKeywordList = []
+	# word_ranks = {}
+	# for index in range(n_keywords):
+	# 	if len(sorted(ranks.iteritems(), key=lambda x: x[1], reverse=True)) > 0:
+	# 		currKeyword = sorted(ranks.iteritems(), key=lambda x: x[1], reverse=True)[0][0]
+	# 		currKeywordRank = sorted(ranks.iteritems(), key=lambda x: x[1], reverse=True)[0][1]
+	# 		MMRKeywordList.append(currKeyword)
+	# 		word_ranks[currKeyword] = currKeywordRank
+	# 		graph.remove_node(currKeyword)
+	# 		ranks = networkx.pagerank(graph)
+
+
+
+	# word_ranks = getRippleScores(ranks, n_keywords, graph)
+	# keywords = set(word_ranks.keys())
+
+	# print "In TextRank: ", keywords
+
+	word_ranks = {word_rank[0]: word_rank[1]
+		for word_rank in sorted(ranks.iteritems(), key=lambda x: x[1], reverse=True)[:n_keywords]}
+	keywords = set(word_ranks.keys())
+
+
+	# keywords = set(MMRKeywordList)
+
+	return word_ranks
+
+def getKeyphraseByTextRank(text, n_keywords=0.4, n_windowSize=4, n_cooccurSize=3):
 	words = [word.lower()
 		for word in nltk.word_tokenize(text)
 		if len(word) > 1]
@@ -199,14 +298,18 @@ def getKeyphraseByTextRank(text, n_keywords=0.05, n_windowSize=4, n_cooccurSize=
 			word_ranks[currKeyword] = currKeywordRank
 			graph.remove_node(currKeyword)
 			ranks = networkx.pagerank(graph)
-		# word_ranks = {word_rank[0]: word_rank[1]
-		# 	for word_rank in sorted(ranks.iteritems(), key=lambda x: x[1], reverse=True)[:n_keywords]}
+
+
+
+	# word_ranks = getRippleScores(ranks, n_keywords, graph)
+	# keywords = set(word_ranks.keys())
 
 
 
 	# word_ranks = {word_rank[0]: word_rank[1]
 	# 	for word_rank in sorted(ranks.iteritems(), key=lambda x: x[1], reverse=True)[:n_keywords]}
 	# keywords = set(word_ranks.keys())
+
 
 	keywords = set(MMRKeywordList)
 
@@ -277,36 +380,6 @@ def removeDuplicates(seq):
 	seen_add = seen.add
 	return [x for x in seq if not (x in seen or seen_add(x))]
 
-def HITS(phraseScoreList, phraseAuthorMap, authorScoreList, authorPhraseMap):
-	for count in range(0, 10000):
-		norm = 0.0
-		for author in authorPhraseMap:
-			currPhraseList = authorPhraseMap[author]
-			authorScore = 0
-			for phrase in currPhraseList:
-				authorScore += phraseScoreList[phrase]
-
-			norm += (authorScore ** 2)
-			authorScoreList[author] = authorScore
-		norm = math.sqrt(norm)
-		for author in authorScoreList:
-			authorScoreList[author] = authorScoreList[author] / norm
-
-		norm = 0.0
-		for phrase in phraseAuthorMap:
-			currAuthorList = phraseAuthorMap[phrase]
-			phraseScore = 0
-			for author in currAuthorList:
-				phraseScore += authorScoreList[author]
-
-			norm += (phraseScore ** 2)
-			phraseScoreList[phrase] = phraseScore
-		norm = math.sqrt(norm)
-		for phrase in phraseScoreList:
-			phraseScoreList[phrase] = phraseScoreList[phrase] / norm
-
-	return phraseScoreList, phraseAuthorMap, authorScoreList, authorPhraseMap
-
 def getInfluentialPhraseScoreSeries(phraseScoreMapSeries):
 	upperBound = 0.5
 	lowerBound = 0.05
@@ -345,6 +418,10 @@ if (__name__ == '__main__'):
 	predefinedNumberOfVIPAuthors = 300
 	predefinedNumberOfVIPPhrases = 300
 	commonPhrasesRecognitionCriteria = int(0.25 * predefinedNumberOfVIPAuthors)
+	keywords = ["software engineering", "software and its engineering"]
+	# keywords = ["database", "storage"]
+	# keywords = ["www", "search engine", "world wide web", "information retrieval", "internet"]
+	filterList = ["kw", "ref_text", "cited_by_text", "concept_desc", "subtitle"]
 
 
 	vocabOccurrenceMapSeries = [{} for n in range(70)]
@@ -362,51 +439,57 @@ if (__name__ == '__main__'):
 		if count > 9000:
 			flag9000_2 = True
 
+		print 'Currently processing: %d/9719' % count
+
 		for article in articleList:
 
-			timeStamp = int(article.getElementsByTagName("article_publication_date").item(0).childNodes[0].data.split("-")[2])
-			offset = timeStamp - baseYear
-			vocabOccurrenceMap = vocabOccurrenceMapSeries[offset]
-			vocabTextRankMap = vocabTextRankMapSeries[offset]
+			if keyWordFilter(article, keywords, filterList):
+
+				timeStamp = int(article.getElementsByTagName("article_publication_date").item(0).childNodes[0].data.split("-")[2])
+				offset = timeStamp - baseYear
+				vocabOccurrenceMap = vocabOccurrenceMapSeries[offset]
+				vocabTextRankMap = vocabTextRankMapSeries[offset]
 
 
-			# abstract = article.getElementsByTagName("par")
-			abstract = article.getElementsByTagName("ft_body")
-			
-			if len(abstract) > 0 and len(abstract.item(0).childNodes) > 0:
-				abstract = abstract.item(0).childNodes[0].data
-				abstract = re.sub(r'<.*?>', "", abstract)
-				abstract = re.sub(r'\"', "", abstract)
-				abstract = str(abstract.encode('utf-8')).translate(None, string.punctuation)
-				abstract = ''.join([i for i in abstract if not i.isdigit()])
+				abstract = article.getElementsByTagName("par")
+				# abstract = article.getElementsByTagName("ft_body")
+				
+				if len(abstract) > 0 and len(abstract.item(0).childNodes) > 0:
+					abstract = abstract.item(0).childNodes[0].data
+					abstract = re.sub(r'<.*?>', "", abstract)
+					abstract = re.sub(r'\"', "", abstract)
+					abstract = str(abstract.encode('utf-8')).translate(None, string.punctuation)
+					abstract = ''.join([i for i in abstract if not i.isdigit()])
 
-				paragraph = tagNPFilter(abstract)
-				phraseList = paragraph.split()
-				for identifiedPhrase in phraseList:
-					if not vocabOccurrenceMap.has_key(identifiedPhrase):
-						vocabOccurrenceMap[identifiedPhrase] = 1
-					else:
-						vocabOccurrenceMap[identifiedPhrase] += 1
+					# paragraph = tagNPFilter(abstract)
+					# phraseList = paragraph.split()
+					# for identifiedPhrase in phraseList:
+					# 	if not vocabOccurrenceMap.has_key(identifiedPhrase):
+					# 		vocabOccurrenceMap[identifiedPhrase] = 1
+					# 	else:
+					# 		vocabOccurrenceMap[identifiedPhrase] += 1
 
-
-				currPhraseScoreMap = getKeyphraseByTextRank(abstract)
-				for currPhrase in currPhraseScoreMap:
-					if not vocabTextRankMap.has_key(currPhrase):
-						vocabTextRankMap[currPhrase] = currPhraseScoreMap[currPhrase]
-					else:
-						vocabTextRankMap[currPhrase] += currPhraseScoreMap[currPhrase]
+					currTextList = generateNPTextList(abstract)
+					currPhraseScoreMap = getKeyphraseByTextRankFromNP(currTextList)
+					for currPhrase in currPhraseScoreMap:
+						if not vocabTextRankMap.has_key(currPhrase):
+							vocabTextRankMap[currPhrase] = currPhraseScoreMap[currPhrase]
+						else:
+							vocabTextRankMap[currPhrase] += currPhraseScoreMap[currPhrase]
 					
 	
-	finalVocabOccurrenceMapSeriesMap = getInfluentialPhraseScoreSeries([ele for ele in vocabOccurrenceMapSeries if bool(ele)])
+	# finalVocabOccurrenceMapSeriesMap = getInfluentialPhraseScoreSeries([ele for ele in vocabOccurrenceMapSeries if bool(ele)])
 	finalVocabTextrankMapSeriesMap = getInfluentialPhraseScoreSeries([ele for ele in vocabTextRankMapSeries if bool(ele)])
 
-	writeMapToFile(finalVocabTextrankMapSeriesMap, 'b/TextrankSeriesNew.txt')
-	writeMapToFile(finalVocabOccurrenceMapSeriesMap, 'b/OccurrenceSeriesNew.txt')
+	writeMapToFile(finalVocabTextrankMapSeriesMap, 'c/soft-abs-nolast-ori.txt')
+	# writeMapToFile(finalVocabOccurrenceMapSeriesMap, 'b/OccurrenceSeriesNew.txt')
 
-	if flag9000_1:
-		print "1st 9000 has been reached"
+	# if flag9000_1:
+	# 	print "1st 9000 has been reached"
 
-	if flag9000_2:
-		print "2nd 9000 has been reached"
+	# if flag9000_2:
+	# 	print "2nd 9000 has been reached"
+
+	print 'End processing!'
 
 	pass
